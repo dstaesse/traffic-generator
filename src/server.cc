@@ -21,6 +21,8 @@
 #include <boost/thread.hpp>
 
 #define RINA_PREFIX "traffic-generator"
+#define BUFF_SZ     9000 /* ETH jumbo frame */
+
 #include <librina/logs.h>
 
 #include "server.h"
@@ -35,11 +37,20 @@ void server::set_interval(unsigned int interval)
 	this->stat_interval = interval;
 }
 
+void server::set_loopback(bool loopback)
+{
+	this->loopback = loopback;
+}
+
 void server::set_output_path(string& path)
 {
 	this->output_path=path;
 }
 
+void server::set_timeout(unsigned int timeout)
+{
+	this->timeout=timeout;
+}
 
 void server::run()
 {
@@ -88,10 +99,18 @@ void server::run()
 
 void server::handle_flow(int port_id)
 {
-	/* negotiate test with client */
+	char recv_buff [BUFF_SZ];
+	while (false) { /* loopback to be implemented */
+		int bytes_read = ipcManager->readSDU(port_id, recv_buff, BUFF_SZ);
+		ipcManager->writeSDU(port_id, recv_buff, bytes_read);
+	}
+        /* no loopback mode */
+
+        /* negotiate test with client */
 	unsigned long long count;
 	unsigned int	   duration; /* it arrives in ms */
 	unsigned int	   sdu_size;
+
 
 	/* FIXME: clean up this junk ---> */
 	/* receive test parameters from client */
@@ -100,6 +119,7 @@ void server::handle_flow(int port_id)
 	ipcManager->readSDU(port_id,
 			    initData,
 			    sizeof(count) + sizeof(duration) + sizeof(sdu_size) + 32);
+
 
 	memcpy(&count, initData, sizeof(count));
 	memcpy(&duration, &initData[sizeof(count)], sizeof(duration));
@@ -114,15 +134,18 @@ void server::handle_flow(int port_id)
 
 	ipcManager->writeSDU(port_id, response, sizeof(response));
 
-	/* <--- FIXME */
+        /* <--- FIXME */
+
+	/* switch to non-blocking I/O */
+	ipcManager->setFlowOptsBlocking(port_id, false);
 
 	char data[sdu_size];
 	bool		   stop		   = false;
 	bool		   timed_test	   = (duration > 0);
 	unsigned long long sdus		   = 0; /* total # sdus in test */
-	unsigned long long sdus_intv	   = 0; /* # sdus up to previous interval */
+	unsigned long long sdus_intv	   = 0; /* #sdus up to previous interval */
 	unsigned long long bytes_read	   = 0; /* total bytes read */
-	unsigned long long bytes_read_intv = 0; /* bytes read up to previous interval */
+	unsigned long long bytes_read_intv = 0; /* bytes up to previous interval */
 	string             csv_fn          = output_path;
 	string             client_apn_api  =
 		ipcManager->getFlowInformation(port_id).remoteAppName.
@@ -133,17 +156,13 @@ void server::handle_flow(int port_id)
 	struct timespec	   intv;     /* reporting interval */
 	struct timespec	   iv_start; /* start reporting intv */
 	struct timespec	   iv_end;   /* reporting deadline */
+	struct timespec    alive;    /* time when last successfull read */
 	struct timespec	   now;
 
 	LOG_INFO("Starting test from client %s on port-id %lu", client_apn_api.c_str(), port_id);
 	LOG_INFO("Duration: %u s, count: %llu sdus, sdu size: %u bytes, reporting interval: %u ms",
 		 duration/1000, count, sdu_size, stat_interval);
 
-        /* to be removed when tgen supports non-blocking I/O */
-	if (timed_test && !csv_fn.empty()) {
-			LOG_INFO("File output is currently disabled for timed tests");
-			csv_fn = "";
-	}
 	if (!csv_fn.empty()) {
 		/* construct log file name */
 		ostringstream os;
@@ -179,15 +198,25 @@ void server::handle_flow(int port_id)
 	intv.tv_nsec = (stat_interval%1000)*MILLION;
 	ts_add(&start, &intv, &iv_end); /* next deadline for reporting */
 	clock_gettime(CLOCK_REALTIME, &iv_start);
+	alive = iv_start;
 	try {
+		int read =0;
 		while (!stop) {
 			clock_gettime(CLOCK_REALTIME, &now);
-			bytes_read +=  ipcManager->readSDU(port_id, data, sdu_size);
-			sdus++;
+			read =  ipcManager->readSDU(port_id, data, sdu_size);
 			if (!timed_test && sdus >= count)
 				stop = true;
 			if (timed_test && (sdus >= count || ts_diff_us(&now,&end) < 0))
 				stop = true;
+			if (read > 0) {
+				clock_gettime(CLOCK_REALTIME, &alive);
+				sdus++;
+				bytes_read += read;
+			}
+			if (ts_diff_ms(&alive, &now) > timeout) {
+				LOG_INFO("Test on port_id %d timed out", port_id);
+				stop = true;
+			}
 			if (stat_interval && (stop || ts_diff_us(&now, &iv_end) < 0)) {
 				int us = ts_diff_us(&iv_start, &now);
 				LOG_INFO("Port %4d: %9llu SDUs (%12llu bytes) in %12lu us => %9.4f p/s, %9.4f Mb/s",
@@ -208,21 +237,25 @@ void server::handle_flow(int port_id)
 				bytes_read_intv = bytes_read;
 				ts_add(&iv_start, &intv, &iv_end); /* end time for next interval */
 			}
-		}
+		} /* while (!stop) */
+		LOG_INFO("Port %4d: Test complete.", port_id);
+
+		/* switch to blocking I/O */
+		ipcManager->setFlowOptsBlocking(port_id, true);
+
 		clock_gettime(CLOCK_REALTIME, &end);
 		long ms = ts_diff_ms(&start, &end);
-		/* FIXME: removed until we have non-blocking readSDU()
-		   unsigned int nms = htobe32(ms);
-		   unsigned long long ncount = htobe64(totalSdus);
-		   unsigned long long nbytes = htobe64(totalBytes);
+		/* FIXME: removed until we have non-blocking readSDU() */
+		unsigned int nms = htobe32(ms);
+		unsigned long long ncount = htobe64(sdus);
+		unsigned long long nbytes = htobe64(bytes_read);
 
-		   char statistics[sizeof(ncount) + sizeof(nbytes) + sizeof(nms) + 64];
-		   memcpy(statistics, &ncount, sizeof(ncount));
-		   memcpy(&statistics[sizeof(ncount)], &nbytes, sizeof(nbytes));
-		   memcpy(&statistics[sizeof(ncount) + sizeof(nbytes)], &nms, sizeof(nms));
+		char statistics[sizeof(ncount) + sizeof(nbytes) + sizeof(nms) + 64];
+		memcpy(statistics, &ncount, sizeof(ncount));
+		memcpy(&statistics[sizeof(ncount)], &nbytes, sizeof(nbytes));
+		memcpy(&statistics[sizeof(ncount) + sizeof(nbytes)], &nms, sizeof(nms));
 
-		   ipcManager->writeSDU(port_id, statistics, sizeof(statistics) + 64);
-		*/
+		ipcManager->writeSDU(port_id, statistics, sizeof(statistics) + 64);
 
 		LOG_INFO("Port %4d: %9llu SDUs, %12llu bytes in %9ld ms, %4.4f Mb/s",
 			 port_id, sdus, bytes_read, ms, (bytes_read * 8.0) / (ms * 1000));

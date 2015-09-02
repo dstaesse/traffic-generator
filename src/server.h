@@ -29,7 +29,9 @@ server(const std::string& apn,
 
 	void run();
 	void set_interval(unsigned int stat_interval);
+	void set_loopback(bool loopback);
 	void set_output_path(string& path);
+	void set_timeout(unsigned int timeout);
 
 protected:
 	/* not used yet */
@@ -45,7 +47,10 @@ private:
 /* internal state */
 
 	unsigned int stat_interval ; /* interval to report stats (ms) */
+	unsigned int timeout;        /* timeout interval (ms) */
+	bool loopback;               /* server in loopback mode */
 	string output_path; /* path to output files, empty for no output */
+
 
 /* internal functions */
 

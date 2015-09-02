@@ -42,19 +42,22 @@ simple_ap(const string& apn,
 	void register_ap();
 	void register_ap(const string& dif_name);
 	void register_ap(const vector<string>& dif_names);
+
 	void unregister_ap();
 	void unregister_ap(const std::string& dif_name);
 	void unregister_ap(const vector<string>& dif_names);
 
-/* requesting and releasing N-1-flows */
+        /* requesting and releasing N-1-flows */
 	int request_flow(const std::string& apn,
 			 const std::string& api,
-			 const std::string& qos_cube);
+			 const std::string& qos_cube,
+			 bool blocking = true);
 
 	int request_flow(const std::string& apn,
 			 const std::string& api,
 			 const std::string& qos_cube,
-			 const std::string& dif_name);
+			 const std::string& dif_name,
+			 bool blocking = true);
 
 	int release_flow(const int port_id);
 	void release_all_flows();

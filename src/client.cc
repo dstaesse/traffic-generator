@@ -31,6 +31,7 @@ using namespace std;
 using namespace rina;
 
 /* this needs to be redesigned, we need test templates */
+/* loopback mode hacked in for D62, needs proper implementation */
 int client::negotiate_test(long long count, int duration, int sdu_size, int port_id)
 {
 	//TODO: clean up this fix, padding of 32 bytes added to avoid runt frames
@@ -45,14 +46,22 @@ int client::negotiate_test(long long count, int duration, int sdu_size, int port
 	memcpy(&init_data[sizeof(ncount)], &ndur, sizeof(ndur));
 	memcpy(&init_data[sizeof(ncount) + sizeof(ndur)], &nsize, sizeof(nsize));
 
-	ipcManager->writeSDU(port_id, init_data,
+	ipcManager->writeSDU(port_id,
+			     init_data,
 			     sizeof(count) + sizeof(duration) + sizeof(sdu_size) + 32);
 
 	char response[128];
 	response[127] = '\0';
-	ipcManager->readSDU(port_id, response, 127);
-	LOG_INFO("starting test");
-	return 0; //ALL IS WELL
+	while (!ipcManager->readSDU(port_id, response, 127)) {
+		/* wait for response from the server, non-blocking I/O */
+		ipcManager->writeSDU(port_id,
+				     init_data,
+				     sizeof(count) + sizeof(duration) + sizeof(sdu_size) + 32);
+
+	}
+	if (!strcmp(init_data, response))
+		return 1; /* loopback mode */
+	return 0; /* normal test */
 }
 
 /* needs common code extracted and function ptrs to
@@ -72,6 +81,7 @@ void client::single_cbr_test(unsigned int size,
 	unsigned long long seq = 0;
 	struct timespec start;
 	struct timespec end;
+	struct timespec now;
 	struct timespec deadline;
 	bool stop = 0;
 	double byterate;
@@ -81,6 +91,9 @@ void client::single_cbr_test(unsigned int size,
 	if (negotiate_test(count, duration, size, port_id) < 0)
 		return;
 
+	/* switch to non-blocking I/O */
+	ipcManager->setFlowOptsBlocking(port_id, false);
+
 	if (rate) {
 		byterate = rate / 8.0; /*kB/s */
 		interval_time = size / byterate; /* ms */
@@ -89,7 +102,11 @@ void client::single_cbr_test(unsigned int size,
 	clock_gettime(CLOCK_REALTIME, &start);
 	while (!stop) {
 		memcpy(to_send, &seq, sizeof(seq));
-		ipcManager->writeSDU(port_id, to_send, size);
+		while (ipcManager->writeSDU(port_id, to_send, size) < 0) {
+			clock_gettime(CLOCK_REALTIME, &now);
+			if (ts_diff_ns(&end, &now) > interval_time * 100)
+				break; /* avoid hanging if not able to send packets */
+		}
 		long nanos = seq*interval_time*MILLION;
 		int seconds = 0;
 		while (nanos > BILLION) {
@@ -111,6 +128,9 @@ void client::single_cbr_test(unsigned int size,
 	}
 	clock_gettime(CLOCK_REALTIME, &end);
 
+	/* switch to blocking I/O */
+	ipcManager->setFlowOptsBlocking(port_id, true);
+
 	long us = ts_diff_us(&start, &end);
 	LOG_INFO("sent statistics: %9llu SDUs, %12llu bytes in %9ld us, %4.4f Mb/s",
 		 seq, seq * size, us, (seq*size * 8.0)/us);
@@ -127,6 +147,7 @@ void client::single_poisson_test(unsigned int size,
 	unsigned long long seq = 0;
 	struct timespec	   start;
 	struct timespec	   end;
+	struct timespec    now;
 	bool		   stop = 0;
 	double		   interval_time = 0;
 	double		   byterate; /* B/ms */
@@ -135,7 +156,10 @@ void client::single_poisson_test(unsigned int size,
 	if (negotiate_test(count, duration, size, port_id) < 0)
 		return;
 
-	if (rate) {
+	/* switch to non-blocking I/O */
+	ipcManager->setFlowOptsBlocking(port_id, false);
+
+ 	if (rate) {
 		byterate = rate / 8.0;
 		interval_time = size / byterate; /* ms */
 	}
@@ -150,7 +174,11 @@ void client::single_poisson_test(unsigned int size,
 	struct timespec next = start;
 	while (!stop) {
 		memcpy(to_send, &seq, sizeof(seq));
-		ipcManager->writeSDU(port_id, to_send, size);
+		while (ipcManager->writeSDU(port_id, to_send, size) < 0) {
+			clock_gettime(CLOCK_REALTIME, &now);
+			if (ts_diff_ns(&end, &now) > interval_time * 100)
+				break; /* avoid hanging if not able to send packets */
+		}
 		long nanos = rvt()*MILLION/poisson_mean*interval_time;
 		struct timespec interval = {nanos / BILLION, nanos % BILLION};
 		ts_add(&next,&interval,&next);
@@ -166,6 +194,9 @@ void client::single_poisson_test(unsigned int size,
 			stop = 1;
 	}
 	clock_gettime(CLOCK_REALTIME, &end);
+
+	/* switch to blocking I/O */
+	ipcManager->setFlowOptsBlocking(port_id, true);
 
 	long us = ts_diff_us(&start, &end);
 	LOG_INFO("sent statistics: %9llu SDUs, %12llu bytes in %9ld us, %4.4f Mb/s",

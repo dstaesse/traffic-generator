@@ -29,11 +29,13 @@ int main(int argc, char * argv[])
 	static bool		  listen;
 	static bool		  registration;
 	static bool		  busy;
+	static bool               loopback_mode;
 	static unsigned long long count;
 	static unsigned int	  size;
 	static unsigned int	  rate;
 	static unsigned int	  duration;
 	static unsigned int	  interval;
+	static unsigned int       timeout;
 	static std::string	  server_apn;
 	static std::string	  server_api;
 	static std::string	  client_apn;
@@ -98,6 +100,13 @@ int main(int argc, char * argv[])
 			false,
 			500,
 			"unsigned integer");
+		TCLAP::ValueArg<unsigned int> timeoutArg(
+			"",
+			"timeout",
+			"Time for a test to timeout from client inactivity (ms), default = 10000 ms",
+			false,
+			10000,
+			"unsigned integer");
 		TCLAP::ValueArg<unsigned long long> countArg(
 			"c",
 			"count",
@@ -152,6 +161,11 @@ int main(int argc, char * argv[])
 			"sleep",
 			"sleep instead of busywait between sending SDUs, default = false.",
 			false);
+		TCLAP::SwitchArg loopbackArg(
+			"",
+			"loopback",
+			"puts the server in loopback mode, echoing everything back to the client. default = false.",
+			false);
 		TCLAP::ValueArg<std::string> csvPathArg(
 			"o",
 			"output-path",
@@ -161,6 +175,7 @@ int main(int argc, char * argv[])
 			"string");
 
 		cmd.add(sleepArg);
+//		cmd.add(loopbackArg);
 		cmd.add(registrationArg);
 		cmd.add(serverApnArg);
 		cmd.add(serverApiArg);
@@ -171,6 +186,7 @@ int main(int argc, char * argv[])
 		cmd.add(poissonMeanArg);
 		cmd.add(distributionArg);
 		cmd.add(sizeArg);
+		cmd.add(timeoutArg);
 		cmd.add(rateArg);
 		cmd.add(durationArg);
 		cmd.add(countArg);
@@ -183,6 +199,7 @@ int main(int argc, char * argv[])
 		count		  = countArg.getValue();
 		registration	  = registrationArg.getValue();
 		size		  = sizeArg.getValue();
+		timeout           = timeoutArg.getValue();
 		server_apn	  = serverApnArg.getValue();
 		server_api	  = serverApiArg.getValue();
 		client_apn	  = clientApnArg.getValue();
@@ -194,6 +211,7 @@ int main(int argc, char * argv[])
 		distribution_type = distributionArg.getValue();
 		interval	  = intervalArg.getValue();
 		busy		  = !sleepArg.getValue();
+		loopback_mode     = false; //loopbackArg.getValue();
 		poisson_mean	  = poissonMeanArg.getValue();
 		csv_path          = csvPathArg.getValue();
 
@@ -212,17 +230,23 @@ int main(int argc, char * argv[])
 			// Server mode
 			server s(server_apn, server_api);
 			s.set_interval(interval);
+			s.set_timeout(timeout);
 			s.set_output_path(csv_path);
+			s.set_loopback(loopback_mode);
 			s.register_ap(dif_name);
 			s.run();
 		} else {
 			// Client mode
 			client c(client_apn, client_api);
-			/* FIXME: "" means any DIF, should be cleaned up */
 			if (registration)
 				c.register_ap(dif_name);
-			int port_id = c.request_flow(server_apn, server_api, qos_cube);
-			if (distribution_type == "CBR" || distribution_type == "cbr")
+			int port_id = c.request_flow(server_apn,
+						     server_api,
+						     qos_cube,
+						     true /* blocking I/O */);
+			LOG_INFO ("Flow created on port_id %d", port_id);
+			if (distribution_type == "CBR" ||
+			    distribution_type == "cbr")
 				c.single_cbr_test(size,
 						  count,
 						  duration*1000,

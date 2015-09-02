@@ -102,7 +102,8 @@ void simple_ap::unregister_ap(const vector<string>& dif_names)
 
 int simple_ap::request_flow(const std::string& apn,
 			    const std::string& api,
-			    const std::string& qos_cube)
+			    const std::string& qos_cube,
+			    bool blocking)
 {
 	AllocateFlowRequestResultEvent * afrrevent;
 	FlowSpecification qos_spec;
@@ -114,7 +115,7 @@ int simple_ap::request_flow(const std::string& apn,
 	else if (!std::string("unreliable").compare(qos_cube))
 		qos_spec.maxAllowableGap = -1;
 	else
-		throw IPCException("not a valid qoscube");
+		LOG_INFO("not a valid qoscube");
 
 	seqnum = ipcManager->requestFlowAllocation(
 		ApplicationProcessNamingInformation(this->name, this->instance),
@@ -133,16 +134,20 @@ int simple_ap::request_flow(const std::string& apn,
 
 	afrrevent = dynamic_cast<AllocateFlowRequestResultEvent*>(event);
 
-	rina::FlowInformation flow =
-		ipcManager->commitPendingFlow(
-			afrrevent->sequenceNumber,
-			afrrevent->portId,
-			afrrevent->difName);
+	rina::FlowInformation flow = ipcManager->commitPendingFlow(
+		afrrevent->sequenceNumber,
+		afrrevent->portId,
+		afrrevent->difName);
+
 	if (flow.portId < 0) {
 		LOG_ERR("Failed to allocate a flow");
 		return 0;
-	} else
+	} else {
 		LOG_DBG("Port id = %d", flow.portId);
+	}
+
+	ipcManager->setFlowOptsBlocking(flow.portId, blocking);
+
 	return flow.portId;
 }
 
@@ -151,7 +156,8 @@ int simple_ap::request_flow(const std::string& apn,
 int simple_ap::request_flow(const std::string& apn,
 			    const std::string& api,
 			    const std::string& qos_cube,
-			    const std::string& dif_name)
+			    const std::string& dif_name,
+			    bool blocking)
 {
 	AllocateFlowRequestResultEvent * afrrevent;
 	FlowSpecification qos_spec;
@@ -164,8 +170,9 @@ int simple_ap::request_flow(const std::string& apn,
 		qos_spec.maxAllowableGap = -1;
 	else
 		throw IPCException("not a valid qoscube");
+
 	if (dif_name == string())
-		return request_flow(apn, api, qos_cube);
+		return request_flow(apn, api, qos_cube, blocking);
 
 	seqnum = ipcManager->requestFlowAllocationInDIF(
 		ApplicationProcessNamingInformation(
@@ -200,8 +207,12 @@ int simple_ap::request_flow(const std::string& apn,
 	if (flow.portId < 0) {
 		LOG_ERR("Failed to allocate a flow");
 		return 0;
-	} else
+	} else {
 		LOG_DBG("Port id = %d", flow.portId);
+	}
+
+	ipcManager->setFlowOptsBlocking(flow.portId, blocking);
+
 	return flow.portId;
 }
 
@@ -223,9 +234,11 @@ int simple_ap::release_flow(const int port_id)
 		}
 		LOG_DBG("Got new event %d", event->eventType);
 	}
+
 	resp = dynamic_cast<DeallocateFlowResponseEvent*>(event);
 
 	ipcManager->flowDeallocationResult(port_id, resp->result == 0);
+
 	return 0;
 }
 
